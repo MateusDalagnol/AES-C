@@ -1,0 +1,27 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "build",
+            "type": "shell",
+            "command": "gcc",
+            "args": [
+                "-o",
+                "${workspaceFolder}/aes.exe",
+                "${workspaceFolder}/aes.c",
+                "-I",
+                "C:/Program Files/OpenSS/include",
+                "-L",
+                "C:/Program Files/OpenSSL/lib",
+                "-lssl",
+                "-lcrypto",
+                "-lws2_32",
+                "-lgdi32"
+            ],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            }
+        }
+    ]
+}
