@@ -1,9 +1,9 @@
-# Ignore all VS Code settings
 .vscode/
-
-# OR: Ignore most, but keep specific team-shared files
 .vscode/*
 !.vscode/settings.json
 !.vscode/tasks.json
 !.vscode/launch.json
 !.vscode/extensions.json
+
+
+.clang-format
