@@ -7,3 +7,5 @@
 
 
 .clang-format
+
+*.exe

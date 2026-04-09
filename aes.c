@@ -1,3 +1,4 @@
+#include <openssl/evp.h>
 #include <openssl/sha.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -11,14 +12,9 @@ typedef uint8_t state_t[4][4];
 
 typedef struct {
     uint8_t salt[16];
-    uint8_t ciphertext[16];
-} encrypted_t;
-
-typedef struct {
-    uint8_t salt[16];
     uint8_t iv[16];
     uint8_t *ciphertext;
-    int tamanho
+    int tamanho;
 } encrypted_cbc_t;
 
 const uint8_t sbox[256] = {
@@ -71,41 +67,6 @@ const uint8_t inv_sbox[256] = {
 
 const uint8_t rcon[14] = {0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40,
                           0x80, 0x1B, 0x36, 0x6C, 0xD8, 0xAB, 0x4D};
-
-void print_state(state_t state, const char *titulo) {
-    printf("\n%s:\n", titulo);
-    printf("          Col0 Col1 Col2 Col3\n");
-    for (int linha = 0; linha < 4; linha++) {
-        printf("Linha %d:  ", linha);
-        for (int col = 0; col < 4; col++) {
-            printf(" %02x  ", state[linha][col]);
-        }
-        printf("\n");
-    }
-}
-
-void print_keys(uint8_t *chaves, int num_palavras) {
-    for (int p = 0; p < num_palavras; p++) {
-        printf("Palavra %2d: ", p);
-        for (int i = 0; i < 4; i++) {
-            printf("%02x ", chaves[p * 4 + i]);
-        }
-        printf("\n");
-
-        // A cada 4 palavras, mostra que é uma chave completa
-        if ((p + 1) % 4 == 0) {
-            printf("  ↑ Chave %d\n", (p + 1) / 4 - 1);
-        }
-    }
-}
-
-void print_hex(uint8_t *dados, int tamanho, const char *titulo) {
-    printf("%s: ", titulo);
-    for (int i = 0; i < tamanho; i++) {
-        printf("%02x", dados[i]);
-    }
-    printf("\n");
-}
 
 void texto_para_state(uint8_t *texto, state_t state) {
     int idx = 0;
@@ -375,35 +336,42 @@ void sha_256(uint8_t *chave, int chave_len, uint8_t *dados, int dados_len,
     uint8_t k_opad[SHA256_BLOCK_SIZE];
     uint8_t inner_hash[SHA256_DIGEST_LENGTH];
     uint8_t k[SHA256_BLOCK_SIZE];
-    int i;
 
     if (chave_len > SHA256_BLOCK_SIZE) {
-        SHA256(chave, chave_len, k);
-        memcpy(k, k, SHA256_DIGEST_LENGTH);
+        EVP_MD_CTX *ctx = EVP_MD_CTX_new();
+        unsigned int len = SHA256_DIGEST_LENGTH;
+        EVP_DigestInit_ex(ctx, EVP_sha256(), NULL);
+        EVP_DigestUpdate(ctx, chave, chave_len);
+        EVP_DigestFinal_ex(ctx, k, &len);
+        EVP_MD_CTX_free(ctx);
         chave_len = SHA256_DIGEST_LENGTH;
     } else {
         memcpy(k, chave, chave_len);
     }
 
-    for (i = chave_len; i < SHA256_BLOCK_SIZE; i++) {
+    for (int i = chave_len; i < SHA256_BLOCK_SIZE; i++)
         k[i] = 0;
-    }
 
     for (int i = 0; i < SHA256_BLOCK_SIZE; i++) {
         k_ipad[i] = k[i] ^ 0x36;
         k_opad[i] = k[i] ^ 0x5C;
     }
 
-    SHA256_CTX ctx;
-    SHA256_Init(&ctx);
-    SHA256_Update(&ctx, k_ipad, SHA256_BLOCK_SIZE);
-    SHA256_Update(&ctx, dados, dados_len);
-    SHA256_Final(inner_hash, &ctx);
+    EVP_MD_CTX *ctx = EVP_MD_CTX_new();
+    unsigned int len = SHA256_DIGEST_LENGTH;
 
-    SHA256_Init(&ctx);
-    SHA256_Update(&ctx, k_opad, SHA256_BLOCK_SIZE);
-    SHA256_Update(&ctx, inner_hash, SHA256_DIGEST_LENGTH);
-    SHA256_Final(saida, &ctx);
+    EVP_DigestInit_ex(ctx, EVP_sha256(), NULL);
+    EVP_DigestUpdate(ctx, k_ipad, SHA256_BLOCK_SIZE);
+    EVP_DigestUpdate(ctx, dados, dados_len);
+    EVP_DigestFinal_ex(ctx, inner_hash, &len);
+
+    // hash externo: SHA256(k_opad || inner_hash)
+    EVP_DigestInit_ex(ctx, EVP_sha256(), NULL);
+    EVP_DigestUpdate(ctx, k_opad, SHA256_BLOCK_SIZE);
+    EVP_DigestUpdate(ctx, inner_hash, SHA256_DIGEST_LENGTH);
+    EVP_DigestFinal_ex(ctx, saida, &len);
+
+    EVP_MD_CTX_free(ctx);
 }
 
 void pbkdf2(uint8_t *senha, int senha_len, uint8_t *salt, int salt_len,
@@ -444,205 +412,205 @@ void derivar_chave_de_senha(uint8_t *senha, uint8_t *salt, uint8_t *chave) {
     pbkdf2(senha, strlen((char *)senha), salt, 16, 100000, chave, 32);
 }
 
-encrypted_t criptografar(uint8_t *texto, uint8_t *senha){
-    encrypted_t resultado;
-    uint8_t chave[32];
+void criptografar_cbc(uint8_t *texto, int tamanho, uint8_t *senha,
+                      uint8_t *salt, uint8_t *cifrado, uint8_t *iv) {
 
-    gerar_salt(resultado.salt);
-
-    derivar_chave_de_senha(senha, resultado.salt, chave);
-
-    aes_256(texto, chave, resultado.ciphertext);
-
-    return resultado;
-}
-
-int decodificar(encrypted_t *entrada, uint8_t *senha, uint8_t *texto){
-    uint8_t chave[32];
-
-    derivar_chave_de_senha(senha, entrada->salt, chave);
-    aes_256_decrypt(entrada->ciphertext, chave, texto);
-
-    return 1;
-}
-
-void criptografar_cbc(uint8_t *texto, int tamanho, 
-                       uint8_t *senha, uint8_t *salt,
-                       uint8_t *cifrado, uint8_t *iv) {
-    
     uint8_t chave[32];
     uint8_t bloco[16];
     uint8_t anterior[16];
     uint8_t cifrado_bloco[16];
-    
+
     derivar_chave_de_senha(senha, salt, chave);
-    
+
     for (int i = 0; i < 16; i++) {
         iv[i] = rand() % 256;
     }
-    
+
     memcpy(anterior, iv, 16);
-    
+
     for (int i = 0; i < tamanho; i += 16) {
         int bloco_tamanho = (tamanho - i) < 16 ? (tamanho - i) : 16;
         memcpy(bloco, texto + i, bloco_tamanho);
-        
+
         if (bloco_tamanho < 16) {
             memset(bloco + bloco_tamanho, 0, 16 - bloco_tamanho);
         }
-        
+
         for (int j = 0; j < 16; j++) {
             bloco[j] ^= anterior[j];
         }
-        
+
         aes_256(bloco, chave, cifrado_bloco);
         memcpy(cifrado + i, cifrado_bloco, 16);
         memcpy(anterior, cifrado_bloco, 16);
     }
 }
 
-void decodificar_cbc(uint8_t *cifrado, int tamanho,
-                       uint8_t *senha, uint8_t *salt, uint8_t *iv,
-                       uint8_t *texto) {
-    
+void decodificar_cbc(uint8_t *cifrado, int tamanho, uint8_t *senha,
+                     uint8_t *salt, uint8_t *iv, uint8_t *texto) {
+
     uint8_t chave[32];
     uint8_t bloco[16];
     uint8_t anterior[16];
     uint8_t texto_bloco[16];
-    
+
     derivar_chave_de_senha(senha, salt, chave);
     memcpy(anterior, iv, 16);
-    
+
     for (int i = 0; i < tamanho; i += 16) {
         memcpy(bloco, cifrado + i, 16);
-        
+
         aes_256_decrypt(bloco, chave, texto_bloco);
-        
+
         for (int j = 0; j < 16; j++) {
             texto_bloco[j] ^= anterior[j];
         }
-        
+
         memcpy(texto + i, texto_bloco, 16);
         memcpy(anterior, bloco, 16);
     }
 }
 
-encrypted_cbc_t criptografar_texto_grande(uint8_t *texto, int tamanho, uint8_t *senha) {
+encrypted_cbc_t criptografar_texto_grande(uint8_t *texto, int tamanho,
+                                          uint8_t *senha) {
     encrypted_cbc_t resultado;
-    
+
     int blocos = (tamanho + 15) / 16;
     resultado.ciphertext = malloc(blocos * 16);
     resultado.tamanho = blocos * 16;
-    
+
     gerar_salt(resultado.salt);
-    
-    criptografar_cbc(texto, tamanho, senha, resultado.salt, 
-                      resultado.ciphertext, resultado.iv);
-    
+
+    criptografar_cbc(texto, tamanho, senha, resultado.salt,
+                     resultado.ciphertext, resultado.iv);
+
     return resultado;
 }
 
-void decodificar_texto_grande(encrypted_cbc_t *entrada, uint8_t *senha, uint8_t *texto) {
-    decodificar_cbc(entrada->ciphertext, entrada->tamanho, 
-                     senha, entrada->salt, entrada->iv, texto);
+void decodificar_texto_grande(encrypted_cbc_t *entrada, uint8_t *senha,
+                              uint8_t *texto) {
+    decodificar_cbc(entrada->ciphertext, entrada->tamanho, senha, entrada->salt,
+                    entrada->iv, texto);
 }
 
-int main() {
-    srand(time(NULL));
-    int opcao;
+void bytes_para_hex(uint8_t *bytes, size_t len, char *hex_out) {
+    for (size_t i = 0; i < len; i++)
+        sprintf(hex_out + (i * 2), "%02x", bytes[i]);
+    hex_out[len * 2] = '\0';
+}
+
+void salvar_resultado(encrypted_cbc_t resultado) {
+    char salt_hex[33];
+    char iv_hex[33];
+    char *cipher_hex = malloc(resultado.tamanho * 2 + 1);
+    if (cipher_hex == NULL) {
+        perror("Erro ao alocar memória");
+        exit(1);
+    }
+
+    bytes_para_hex(resultado.salt, 16, salt_hex);
+    bytes_para_hex(resultado.iv, 16, iv_hex);
+    bytes_para_hex(resultado.ciphertext, resultado.tamanho, cipher_hex);
+
+    FILE *arquivo = fopen("texto_cifrado.txt", "w");
+    if (arquivo == NULL) {
+        perror("Erro ao abrir arquivo");
+        free(cipher_hex);
+        exit(1);
+    }
+
+    fprintf(arquivo, "Salt: %s\n", salt_hex);
+    fprintf(arquivo, "IV: %s\n", iv_hex);
+    fprintf(arquivo, "Cifrado: %s\n", cipher_hex);
+
+    fclose(arquivo);
+    free(cipher_hex);
+}
+
+void ler_resultado(encrypted_cbc_t *resultado, char *nome_arquivo) {
+    FILE *arquivo = fopen(nome_arquivo, "r");
+    if (arquivo == NULL) {
+        perror("Erro ao abrir arquivo");
+        exit(1);
+    }
+
+    char linha[4096];
+    char salt_hex[33];
+    char iv_hex[33];
+
+    while (fgets(linha, sizeof(linha), arquivo)) {
+        if (sscanf(linha, "Salt: %32s", salt_hex) == 1) {
+            for (int i = 0; i < 16; i++)
+                sscanf(salt_hex + (i * 2), "%02hhx", &resultado->salt[i]);
+        } else if (sscanf(linha, "IV: %32s", iv_hex) == 1) {
+            for (int i = 0; i < 16; i++)
+                sscanf(iv_hex + (i * 2), "%02hhx", &resultado->iv[i]);
+        } else if (strncmp(linha, "Cifrado: ", 9) == 0) {
+            char *hex = linha + 9;
+            hex[strcspn(hex, "\n")] = 0;
+            resultado->tamanho = strlen(hex) / 2;
+            resultado->ciphertext = malloc(resultado->tamanho);
+            if (resultado->ciphertext == NULL) {
+                perror("Erro ao alocar memória");
+                fclose(arquivo);
+                exit(1);
+            }
+            for (int i = 0; i < resultado->tamanho; i++)
+                sscanf(hex + (i * 2), "%02hhx", &resultado->ciphertext[i]);
+        }
+    }
+
+    fclose(arquivo);
+}
+
+int main(int argc, char *argv[]) {
+
     char senha_input[100];
-    char texto_input[4096];
-    char cifrado_hex[8192];
-    uint8_t texto_bytes[4096];
     uint8_t senha_bytes[100];
-    uint8_t salt[16];
-    uint8_t iv[16];
-    uint8_t *cifrado_bytes;
-    uint8_t texto_decifrado[4096];
-    int tamanho, tamanho_cifrado;
 
-    do {
-        printf("Escolha uma opcao:\n");
-        printf("1 - Criptografar texto\n");
-        printf("2 - Descriptografar texto\n");
-        printf("0 - Sair\n");
-        printf("Opcao: ");
-        scanf("%d", &opcao);
-        getchar();
-        
-        if (opcao == 1) {
-            
-            printf("Digite a senha: ");
-            fgets(senha_input, sizeof(senha_input), stdin);
-            senha_input[strcspn(senha_input, "\n")] = 0;
-            memcpy(senha_bytes, senha_input, strlen(senha_input));
-            
-            printf("Digite o texto a ser criptografado: ");
-            fgets(texto_input, sizeof(texto_input), stdin);
-            texto_input[strcspn(texto_input, "\n")] = 0;
-            tamanho = strlen(texto_input);
-            memcpy(texto_bytes, texto_input, tamanho);
-            
-            encrypted_cbc_t resultado = criptografar_texto_grande(texto_bytes, tamanho, senha_bytes);
-
-            printf("Salt: ");
-            for (int i = 0; i < 16; i++) printf("%02x", resultado.salt[i]);
-            printf("\n");
-            
-            printf("IV: ");
-            for (int i = 0; i < 16; i++) printf("%02x", resultado.iv[i]);
-            printf("\n");
-            
-            printf("Cifrado: ");
-            for (int i = 0; i < resultado.tamanho; i++) printf("%02x", resultado.ciphertext[i]);
-            printf("\n\n");
-            
-            free(resultado.ciphertext);
+    if (strcmp(argv[1], "cifrar") == 0) {
+        FILE *file = fopen(argv[2], "rb");
+        if (file == NULL) {
+            printf("erro ao abrir o arquivo");
+            exit(1);
         }
-        else if (opcao == 2) {
 
-            printf("Digite a senha: ");
-            fgets(senha_input, sizeof(senha_input), stdin);
-            senha_input[strcspn(senha_input, "\n")] = 0;
-            memcpy(senha_bytes, senha_input, strlen(senha_input));
-            
-            printf("Digite o Salt (32 caracteres hex): ");
-            fgets(cifrado_hex, sizeof(cifrado_hex), stdin);
-            cifrado_hex[strcspn(cifrado_hex, "\n")] = 0;
-            for (int i = 0; i < 16; i++) {
-                sscanf(cifrado_hex + (i * 2), "%02hhx", &salt[i]);
-            }
-            
-            printf("Digite o IV (32 caracteres hex): ");
-            fgets(cifrado_hex, sizeof(cifrado_hex), stdin);
-            cifrado_hex[strcspn(cifrado_hex, "\n")] = 0;
-            for (int i = 0; i < 16; i++) {
-                sscanf(cifrado_hex + (i * 2), "%02hhx", &iv[i]);
-            }
-            
-            printf("Digite o texto cifrado (em hex): ");
-            fgets(cifrado_hex, sizeof(cifrado_hex), stdin);
-            cifrado_hex[strcspn(cifrado_hex, "\n")] = 0;
-            
-            tamanho_cifrado = strlen(cifrado_hex) / 2;
-            cifrado_bytes = malloc(tamanho_cifrado);
-            for (int i = 0; i < tamanho_cifrado; i++) {
-                sscanf(cifrado_hex + (i * 2), "%02hhx", &cifrado_bytes[i]);
-            }
+        uint8_t texto_bytes[4096];
+        int tamanho = fread(texto_bytes, 1, sizeof(texto_bytes), file);
+        fclose(file);
 
-            decodificar_cbc(cifrado_bytes, tamanho_cifrado, senha_bytes, salt, iv, texto_decifrado);
-            texto_decifrado[tamanho_cifrado] = '\0';
-            
-            printf("Texto decifrado: %s\n\n", texto_decifrado);
-            
-            free(cifrado_bytes);
-        }
-        else if (opcao != 0) {
-            printf("\nOpcao invalida!\n\n");
-        }
-        
-    } while (opcao != 0);
+        printf("Digite a senha: ");
+        fgets(senha_input, sizeof(senha_input), stdin);
+        senha_input[strcspn(senha_input, "\n")] = 0;
+        memcpy(senha_bytes, senha_input, strlen(senha_input));
+
+        encrypted_cbc_t texto_cifrado =
+            criptografar_texto_grande(texto_bytes, tamanho, senha_bytes);
+
+        salvar_resultado(texto_cifrado);
+    } else if (strcmp(argv[1], "decifrar") == 0) {
+
+        printf("Digite a senha para decifrar: ");
+        fgets(senha_input, sizeof(senha_input), stdin);
+        senha_input[strcspn(senha_input, "\n")] = 0;
+        memcpy(senha_bytes, senha_input, strlen(senha_input));
+
+        encrypted_cbc_t texto_cifrado_lido;
+        ler_resultado(&texto_cifrado_lido, argv[2]);
+
+        uint8_t texto_decifrado[4096];
+        decodificar_texto_grande(&texto_cifrado_lido, senha_bytes,
+                                 texto_decifrado);
+        texto_decifrado[texto_cifrado_lido.tamanho] = '\0';
+
+        printf("Texto decifrado: %s", texto_decifrado);
+
+        free(texto_cifrado_lido.ciphertext);
     
-    printf("\nEncerrando...\n");
+    }else {
+        printf("Comando inválido. Use 'cifrar' ou 'decifrar'.\n");
+        return 1;
+    }
+
     return 0;
 }
